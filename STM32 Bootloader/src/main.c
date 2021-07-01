@@ -33,21 +33,271 @@ SOFTWARE.
 #include "bootloader_usart.h"
 #include "bootloader_gpio.h"
 
-/* Private macro */
-#define BOOTLOADER_DMABUFFERSIZE 100UL
-#define BOOTLOADER_USART_BAUDRATE 115200UL
-/* Private variables */
-static uint32_t BootLoader_DMABuffer[BOOTLOADER_DMABUFFERSIZE];
-enum BootLoader_CurrentState{
-	BootLoader_ReceiveData,
-	BootLoader_WaitForReception,
-	BootLoader_TransmitData,
-	BootLoader_WaitForTransmission,
-	BootLoader_HandleError
-}BootLoader_CurrentState = BootLoader_ReceiveData;
-/* Private function prototypes */
-/* Private functions */
+#define BOOTLOADER_ACK 0x79
+#define BOOTLOADER_NACK 0x1F
+#define BOOTLOADER_VERSION 0x1A
 
+/* Private macro */
+#define BOOTLOADER_DMABUFFERSIZE 400UL
+#define BOOTLOADER_USART_BAUDRATE 115200UL
+#define BOOTLOADER_NUMCOMMANDS 13UL
+/* Private variables */
+/* DMA Buffer */
+static uint8_t BootLoader_DMATransmitBuffer[BOOTLOADER_DMABUFFERSIZE];
+static uint8_t BootLoader_DMAReceiveBuffer[BOOTLOADER_DMABUFFERSIZE];
+/* Supported commands */
+const uint8_t BootLoader_Commands[BOOTLOADER_NUMCOMMANDS] =
+			{0x00, 0x01, 0x02, 0x11, 0x21, 0x31, 0x43, 0x50, 0x62, 0x73, 0x82, 0x92, 0xA1};
+/* Private function prototypes */
+bool BootLoader_ValidateCommand(uint8_t Command, uint8_t CommandInverse);
+bool BootLoader_ValidateChecksum(uint8_t* Bytes, uint32_t Length);
+bool BootLoader_Get_Main(void);
+bool BootLoader_GetVersionAndProtection_Main(void);
+bool BootLoader_GetID_Main(void);
+bool BootLoader_ReadMemory_Main(void);
+/* Private functions */
+bool BootLoader_ValidateCommand(uint8_t Command, uint8_t CommandInverse)
+{
+	uint8_t i;
+	bool CommandValid = false;
+	for(i = 0; i < BOOTLOADER_NUMCOMMANDS; i++)
+	{
+		if(Command == BootLoader_Commands[i])
+		{
+			CommandValid = true;
+			break;
+		}
+		else
+		{
+
+		}
+	}
+	if(((Command ^ CommandInverse) == 0xFF) && CommandValid)
+	{
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+bool BootLoader_ValidateChecksum(uint8_t* Bytes, uint32_t Length)
+{
+	uint32_t i = 0;
+	uint8_t result = 0;
+	for(i = 0; i < Length; i++)
+	{
+		result ^= Bytes[i];
+	}
+	if(result == Bytes[Length])
+	{
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+bool BootLoader_Get_Main(void)
+{
+	static enum BootLoader_Get_CurrentState{
+			SendData,
+			WaitTransmission
+	}BootLoader_Get_CurrentState = SendData;
+
+	uint8_t i;
+
+	switch(BootLoader_Get_CurrentState)
+	{
+		case SendData:
+			BootLoader_DMATransmitBuffer[0] = BOOTLOADER_NUMCOMMANDS;
+			BootLoader_DMATransmitBuffer[1] = BOOTLOADER_VERSION;
+			for(i = 0; i < BOOTLOADER_NUMCOMMANDS; i++)
+			{
+				BootLoader_DMATransmitBuffer[i + 2] = BootLoader_Commands[i];
+			}
+			BootLoader_DMATransmitBuffer[BOOTLOADER_NUMCOMMANDS + 2] = BOOTLOADER_ACK;
+			BootLoader_DMATransmitEnable(BOOTLOADER_NUMCOMMANDS + 3);
+			BootLoader_Get_CurrentState = WaitTransmission;
+			break;
+		case WaitTransmission:
+			if(BootLoader_DMAIsDataTransmitted())
+			{
+				BootLoader_Get_CurrentState = SendData;
+				return true;
+				break;
+			}
+			break;
+		default:
+			break;
+	}
+
+	return false;
+}
+bool BootLoader_GetVersionAndProtection_Main(void)
+{
+	static enum BootLoader_GetVersionAndProtection_CurrentState{
+			SendData,
+			WaitTransmission
+	}BootLoader_GetVersionAndProtection_CurrentState = SendData;
+
+	switch(BootLoader_GetVersionAndProtection_CurrentState)
+	{
+		case SendData:
+			BootLoader_DMATransmitBuffer[0] = BOOTLOADER_VERSION;
+			BootLoader_DMATransmitBuffer[1] = 0x00;
+			BootLoader_DMATransmitBuffer[2] = 0x00;
+			BootLoader_DMATransmitBuffer[3] = BOOTLOADER_ACK;
+			BootLoader_DMATransmitEnable(4);
+			BootLoader_GetVersionAndProtection_CurrentState = WaitTransmission;
+			break;
+		case WaitTransmission:
+			if(BootLoader_DMAIsDataTransmitted())
+			{
+				BootLoader_GetVersionAndProtection_CurrentState = SendData;
+				return true;
+				break;
+			}
+			break;
+		default:
+			break;
+	}
+
+	return false;
+}
+bool BootLoader_GetID_Main(void)
+{
+	static enum BootLoader_GetID_CurrentState{
+			SendData,
+			WaitTransmission
+	}BootLoader_GetID_CurrentState = SendData;
+
+	switch(BootLoader_GetID_CurrentState)
+	{
+		case SendData:
+			BootLoader_DMATransmitBuffer[0] = 0x01;
+			BootLoader_DMATransmitBuffer[1] = 0x04;
+			BootLoader_DMATransmitBuffer[2] = 0x00;
+			BootLoader_DMATransmitBuffer[3] = BOOTLOADER_ACK;
+			BootLoader_DMATransmitEnable(4);
+			BootLoader_GetID_CurrentState = WaitTransmission;
+			break;
+		case WaitTransmission:
+			if(BootLoader_DMAIsDataTransmitted())
+			{
+				BootLoader_GetID_CurrentState = SendData;
+				return true;
+				break;
+			}
+			break;
+		default:
+			break;
+	}
+
+	return false;
+}
+bool BootLoader_ReadMemory_Main(void)
+{
+	static enum BootLoader_ReadMemory_CurrentState{
+			WaitAddress,
+			WaitNumBytes,
+			SendData,
+			SendAck,
+			SendNack,
+			WaitTransmission
+	}BootLoader_ReadMemory_CurrentState = SendData, BootLoader_ReadMemory_PreviousState;
+
+	switch(BootLoader_ReadMemory_CurrentState)
+	{
+		case WaitAddress:
+			if(BootLoader_DMAIsDataReceived())
+			{
+				BootLoader_ReadMemory_PreviousState = BootLoader_ReadMemory_CurrentState;
+				/* Get the number of received data units */
+				ReceivedDataCount = BootLoader_DMAGetReceivedDataCount();
+				/* Validate number of received bytes and validate the command */
+				if((ReceivedDataCount == 5) && (BootLoader_ValidateChecksum(BootLoader_DMAReceiveBuffer, 4)))
+				{
+					BootLoader_DMATransmitBuffer[0] = BOOTLOADER_ACK;
+					BootLoader_ReadMemory_CurrentState = SendAck;
+				}
+				else
+				{
+					BootLoader_DMATransmitBuffer[0] = BOOTLOADER_NACK;
+					BootLoader_ReadMemory_CurrentState = SendNAck;
+				}
+				BootLoader_DMATransmitEnable(1);
+			}
+			else
+			{
+
+			}
+			break;
+		case WaitNumBytes:
+			if(BootLoader_DMAIsDataReceived())
+			{
+				BootLoader_ReadMemory_PreviousState = BootLoader_ReadMemory_CurrentState;
+				/* Get the number of received data units */
+				ReceivedDataCount = BootLoader_DMAGetReceivedDataCount();
+				/* Validate number of received bytes and validate the command */
+				if((ReceivedDataCount == 2) && (BootLoader_ValidateChecksum(BootLoader_DMAReceiveBuffer, 1)))
+				{
+					BootLoader_DMATransmitBuffer[0] = BOOTLOADER_ACK;
+					BootLoader_ReadMemory_CurrentState = SendAck;
+				}
+				else
+				{
+					BootLoader_DMATransmitBuffer[0] = BOOTLOADER_NACK;
+					BootLoader_ReadMemory_CurrentState = SendNAck;
+				}
+				BootLoader_DMATransmitEnable(1);
+			}
+			else
+			{
+
+			}
+			break;
+		case SendData:
+			break;
+		case SendAck:
+			if(BootLoader_DMAIsDataTransmitted())
+			{
+				switch(BootLoader_ReadMemory_PreviousState)
+				{
+					case WaitAddress:
+						BootLoader_ReadMemory_CurrentState = WaitNumBytes;
+						break;
+					case WaitNumBytes:
+						BootLoader_ReadMemory_CurrentState = SendData;
+						break;
+					case SendData:
+						BootLoader_ReadMemory_CurrentState = WaitAddress;
+						return true;
+						break;
+					default:
+						break;
+				}
+			}
+			break;
+		case SendNack:
+			if(BootLoader_DMAIsDataTransmitted())
+			{
+				BootLoader_ReadMemory_CurrentState = WaitAddress;
+				return true;
+			}
+			else
+			{
+
+			}
+			break;
+		case WaitTransmission:
+			break;
+		default:
+			break;
+	}
+
+	return false;
+}
 /**
 **===========================================================================
 **
@@ -57,77 +307,139 @@ enum BootLoader_CurrentState{
 */
 int main(void)
 {
+	/* Number of received data units */
 	int32_t ReceivedDataCount;
+	/* Current Bootloader state */
+	enum BootLoader_CurrentMainState{
+		BootLoader_WaitCommand,
+		BootLoader_WaitTransmission,
+		BootLoader_ExecuteCommand
+	}BootLoader_CurrentMainState = BootLoader_WaitCommand;
+	/* The current bootloader command in execution */
+	enum BootLoader_CurrentCommand{
+		BootLoader_Get = 0x00,
+		BootLoader_GetVersionAndProtection = 0x01,
+		BootLoader_GetID = 0x02,
+		BootLoader_ReadMemory = 0x11,
+		BootLoader_Go = 0x21,
+		BootLoader_WriteMemory = 0x31,
+		BootLoader_Erase = 0x43,
+		BootLoader_Special = 0x50,
+		BootLoader_WriteProtect = 0x62,
+		BootLoader_WriteUnprotect = 0x73,
+		BootLoader_ReadoutProtect = 0x82,
+		BootLoader_ReadoutUnprotect = 0x92,
+		BootLoader_GetChecksum = 0xA1
+	}BootLoader_CurrentCommand;
+	/* Is the bootloader currently executing a command ? */
+	bool BootLoader_EndCurrentCommand;
+	/* Is command valid */
+	bool BootLoader_CommandValid;
 
 	/* Initialize system clock to 180MHz */
 	SystemCoreClockUpdate();
 	/* Initialize the GPIO */
 	BootLoader_GPIOInit();
 	/* Initialize DMA */
-	BootLoader_DMAInit(BootLoader_DMABuffer, BOOTLOADER_DMABUFFERSIZE);
+	BootLoader_DMAInit(BootLoader_DMATransmitBuffer, BootLoader_DMAReceiveBuffer, BOOTLOADER_DMABUFFERSIZE);
 	/* Initialize USART */
 	BootLoader_USARTInit(BOOTLOADER_USART_BAUDRATE);
 	/* Enable USART */
 	BootLoader_USARTEnable();
+	/* Enable DMA Reception */
+	BootLoader_DMAReceiveEnable();
 	/* Enable interrupts */
 	__enable_irq();
 
 	while(1)
 	{
-		switch(BootLoader_CurrentState)
+		if(BootLoader_DMATransmitError || BootLoader_DMAReceiveError)
 		{
-			case BootLoader_ReceiveData:
-				BootLoader_DMAReceiveEnable();
-				BootLoader_CurrentState = BootLoader_WaitForReception;
-				break;
-			case BootLoader_WaitForReception:
-				if(BootLoader_DataReceived)
-				{
-					BootLoader_DataReceived = 0;
-					BootLoader_CurrentState = BootLoader_TransmitData;
-				}
-				else if(BootLoader_ReceiveError)
-				{
-					BootLoader_ReceiveError = 0;
-					BootLoader_CurrentState = BootLoader_HandleError;
-				}
-				else
-				{
 
-				}
-				break;
-			case BootLoader_TransmitData:
-				ReceivedDataCount = BootLoader_DMAGetReceivedDataCount();
-				if(ReceivedDataCount > 0)
-				{
-					BootLoader_DMATransmitEnable((uint16_t)ReceivedDataCount);
-					BootLoader_CurrentState = BootLoader_WaitForTransmission;
-				}
-				else
-				{
-					BootLoader_CurrentState = BootLoader_HandleError;
-				}
-				break;
-			case BootLoader_WaitForTransmission:
-				if(BootLoader_DataTransmitted)
-				{
-					BootLoader_CurrentState = BootLoader_ReceiveData;
-					BootLoader_DataTransmitted = 0;
-				}
-				else if(BootLoader_TransmitError)
-				{
-					BootLoader_CurrentState = BootLoader_HandleError;
-					BootLoader_TransmitError = 0;
-				}
-				else
-				{
+		}
+		else
+		{
+			switch(BootLoader_CurrentMainState)
+			{
+				case BootLoader_WaitCommand:
+					if(BootLoader_DMAIsDataReceived())
+					{
+						/* Get the number of received data units */
+						ReceivedDataCount = BootLoader_DMAGetReceivedDataCount();
+						/* Validate number of received bytes and validate the command */
+						if((ReceivedDataCount == 2) && (BootLoader_ValidateCommand(BootLoader_DMAReceiveBuffer[0], BootLoader_DMAReceiveBuffer[1])))
+						{
+							/* Set the command */
+							BootLoader_CurrentCommand = BootLoader_DMAReceiveBuffer[0];
+							BootLoader_CommandValid = true;
+							/* Send ACK */
+							BootLoader_DMATransmitBuffer[0] = BOOTLOADER_ACK;
+						}
+						else
+						{
+							BootLoader_CommandValid = false;
+							/* Send NACK */
+							BootLoader_DMATransmitBuffer[0] = BOOTLOADER_NACK;
+						}
+						BootLoader_CurrentMainState = BootLoader_WaitTransmission;
+						BootLoader_DMATransmitEnable(1);
+					}
+					break;
+				case BootLoader_WaitTransmission:
+					if(BootLoader_DMAIsDataTransmitted())
+					{
+						if(BootLoader_CommandValid)
+						{
+							BootLoader_CurrentMainState = BootLoader_ExecuteCommand;
+						}
+						else
+						{
+							BootLoader_CurrentMainState = BootLoader_WaitCommand;
+						}
+					}
+					break;
+				case BootLoader_ExecuteCommand:
+					/* Bootloader is currently executing a command */
+					BootLoader_EndCurrentCommand = false;
+					/* Check which command are we executing */
+					switch(BootLoader_CurrentCommand)
+					{
+						case BootLoader_Get:
+							BootLoader_EndCurrentCommand = BootLoader_Get_Main();
+							break;
+						case BootLoader_GetVersionAndProtection:
+							BootLoader_EndCurrentCommand = BootLoader_GetVersionAndProtection_Main();
+							break;
+						case BootLoader_GetID:
+							BootLoader_EndCurrentCommand = BootLoader_GetID_Main();
+							break;
+						case BootLoader_ReadMemory:
+						case BootLoader_Go:
+						case BootLoader_WriteMemory:
+						case BootLoader_Erase:
+						case BootLoader_Special:
+						case BootLoader_WriteProtect:
+						case BootLoader_WriteUnprotect:
+						case BootLoader_ReadoutProtect:
+						case BootLoader_ReadoutUnprotect:
+						case BootLoader_GetChecksum:
+						default:
+							BootLoader_EndCurrentCommand = true;
+							break;
+					}
+					/* End command execution */
+					if(BootLoader_EndCurrentCommand)
+					{
+						BootLoader_CurrentMainState = BootLoader_WaitCommand;
+					}
+					else
+					{
 
-				}
-				break;
-			case BootLoader_HandleError:
-			default:
-				ASSERT(0);
-				break;
+					}
+					break;
+				default:
+					break;
+			}
 		}
 	}
 }

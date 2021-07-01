@@ -10,6 +10,6 @@
 
 #include "stm32f4xx_flash.h"
 
-void BootLoader_FlashInit(void);
+uint8_t BootLoader_FlashGetReadoutProtectionStatus(void);
 
 #endif /* BOOTLOADER_INC_BOOTLOADER_FLASH_H_ */
