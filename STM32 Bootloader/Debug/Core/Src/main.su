@@ -1,0 +1,5 @@
+main.c:81:13:BL_VerifyCommand	24	static
+main.c:107:20:BL_VerifyChecksum	24	static
+main.c:129:5:main	24	static
+main.c:326:6:SystemClock_Config	88	static
+main.c:379:6:Error_Handler	4	static,ignoring_inline_asm
