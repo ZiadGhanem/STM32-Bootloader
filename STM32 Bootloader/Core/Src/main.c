@@ -24,7 +24,6 @@
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
-
 /* USER CODE BEGIN Includes */
 
 /* USER CODE END Includes */
@@ -43,17 +42,17 @@
 #define BL_Receive_Buffer_Size	255UL
 #define BL_Transmit_Buffer_Size	255UL
 /* Bootloader supported commands */
-#define BL_Get 0x00
-#define BL_Get_Version_And_Protection 0x01
-#define	BL_Get_ID	0x02
-#define	BL_Read_Memory	0x11
-#define	BL_Go	0x21
-#define	BL_Write_Memory	0x31
-#define	BL_Erase	0x43
-#define	BL_Write_Protect	0x62
-#define	BL_Write_Unprotect	0x73
-#define	BL_Readout_Protect	0x82
-#define	BL_Readout_Unprotect	0x92
+#define BL_Get_Command 0x00
+#define BL_Get_Version_And_Protection_Command 0x01
+#define	BL_Get_ID_Command	0x02
+#define	BL_Read_Memory_Command	0x11
+#define	BL_Go_Command	0x21
+#define	BL_Write_Memory_Command	0x31
+#define	BL_Erase_Command	0x43
+#define	BL_Write_Protect_Command	0x62
+#define	BL_Write_Unprotect_Command	0x73
+#define	BL_Readout_Protect_Command	0x82
+#define	BL_Readout_Unprotect_Command	0x92
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -65,8 +64,13 @@
 
 /* USER CODE BEGIN PV */
 /* Supported commands */
+/* Bootloader Receive Buffer */
+static uint8_t BL_ReceiveBuffer[BL_Receive_Buffer_Size];
+/* Bootloader Transmit Buffer */
+static uint8_t BL_TransmitBuffer[BL_Transmit_Buffer_Size];
 static const uint8_t BL_Commands[] =
 	{0x00, 0x01, 0x02, 0x11, 0x21, 0x31, 0x43, 0x62, 0x73, 0x82, 0x92};
+extern uint32_t _flash_start, _flash_end, _ram_start, _ram_end, _Min_Stack_Size;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -74,11 +78,17 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static ErrorStatus BL_VerifyCommand(uint8_t Command, uint8_t CommandComplement);
 static ErrorStatus BL_VerifyChecksum(uint8_t* pData, uint32_t Length);
+static ErrorStatus BL_Get(void);
+static ErrorStatus BL_GetVersionAndProtectionStatus(void);
+static ErrorStatus BL_GetID(void);
+static ErrorStatus BL_ReadMemory(void);
+static ErrorStatus BL_Go(void);
+static ErrorStatus BL_WriteMemory(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-ErrorStatus BL_VerifyCommand(uint8_t Command, uint8_t CommandComplement)
+static ErrorStatus BL_VerifyCommand(uint8_t Command, uint8_t CommandComplement)
 {
 	ErrorStatus CommandExists = ERROR;
 	uint8_t i;
@@ -120,6 +130,329 @@ static ErrorStatus BL_VerifyChecksum(uint8_t* pData, uint32_t Length)
 		return ERROR;
 	}
 }
+static ErrorStatus BL_Get(void)
+{
+	/* Send ACK byte */
+	BL_TransmitBuffer[0] = BL_ACK;
+	/* Send the number of bytes (version + commands) */
+	BL_TransmitBuffer[1] = BL_Num_Commands;
+	/* Send the bootloader version */
+	BL_TransmitBuffer[2] = BL_Version;
+	HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 3, HAL_MAX_DELAY);
+	/* Send the supported commands */
+	HAL_UART_Transmit(&huart1, (uint8_t*)BL_Commands, BL_Num_Commands, HAL_MAX_DELAY);
+	/* Send ACK byte */
+	BL_TransmitBuffer[0] = BL_ACK;
+	HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+
+	return SUCCESS;
+}
+static ErrorStatus BL_GetVersionAndProtectionStatus(void)
+{
+	/* Send ACK byte */
+	BL_TransmitBuffer[0] = BL_ACK;
+	/* Send the bootloader version */
+	BL_TransmitBuffer[1] = BL_Version;
+	/* Send option bytes */
+	BL_TransmitBuffer[2] = 0x00;
+	BL_TransmitBuffer[3] = 0x00;
+	/* Send ACK byte */
+	BL_TransmitBuffer[4] = BL_ACK;
+	HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 5, HAL_MAX_DELAY);
+
+	return SUCCESS;
+}
+static ErrorStatus BL_GetID(void)
+{
+	/* Send ACK byte */
+	BL_TransmitBuffer[0] = BL_ACK;
+	/* Send the number of bytes */
+	BL_TransmitBuffer[1] = 1;
+	/* Send the process ID */
+	BL_TransmitBuffer[2] = 0x04;
+	BL_TransmitBuffer[3] = 0x00;
+	/* Send ACK byte */
+	BL_TransmitBuffer[4] = BL_ACK;
+	HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 5, HAL_MAX_DELAY);
+
+	return SUCCESS;
+}
+static ErrorStatus BL_ReadMemory(void)
+{
+	/* Used for storing read or write addresses */
+	uint32_t BL_Address;
+	/* Used for storing number of read or written bytes */
+	uint8_t BL_NumBytes;
+
+	/* Is RDP active ? */
+	if((*(__IO uint8_t*)(OPTCR_BYTE1_ADDRESS) == (uint8_t)OB_RDP_LEVEL_0))
+	{
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Receive the start address (4 bytes) with checksum */
+	if(HAL_OK == HAL_UART_Receive(&huart1, BL_ReceiveBuffer, 5, HAL_MAX_DELAY))
+	{
+
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Address valid and checksum ok ? */
+	if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, 5))
+	{
+		BL_Address = *(uint32_t*)BL_ReceiveBuffer;
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Receive the number of bytes to be read and a checksum */
+	if(HAL_OK == HAL_UART_Receive(&huart1, BL_ReceiveBuffer, 2, HAL_MAX_DELAY))
+	{
+
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Checksum ok ? */
+	if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, 2))
+	{
+		BL_NumBytes = BL_ReceiveBuffer[0];
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Send data to host */
+	HAL_UART_Transmit(&huart1, (uint8_t*)BL_Address, BL_NumBytes, HAL_MAX_DELAY);
+
+
+	return SUCCESS;
+}
+static ErrorStatus BL_Go(void)
+{
+	/* Used for storing read or write addresses */
+	uint32_t BL_Address;
+
+	/* Is RDP active ? */
+	if((*(__IO uint8_t*)(OPTCR_BYTE1_ADDRESS) == (uint8_t)OB_RDP_LEVEL_0))
+	{
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Receive the start address (4 bytes) with checksum */
+	if(HAL_OK == HAL_UART_Receive(&huart1, BL_ReceiveBuffer, 5, HAL_MAX_DELAY))
+	{
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Address valid and checksum ok ? */
+	if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, 5))
+	{
+		BL_Address = *(uint32_t*)BL_ReceiveBuffer;
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* First byte lies in stack */
+	if(*(uint32_t*)BL_Address <= _ram_end && *(uint32_t*)BL_Address > (_ram_end - _Min_Stack_Size))
+	{
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Deinitialize all used peripherals */
+	/* Deinitialize GPIO */
+	HAL_GPIO_DeInit(B1_GPIO_Port, B1_Pin);
+	HAL_GPIO_DeInit(LD3_GPIO_Port, LD3_Pin);
+	HAL_GPIO_DeInit(LD4_GPIO_Port, LD4_Pin);
+	/* Deinitialize USART */
+	HAL_UART_MspDeInit(&huart1);
+	/* Deinitialize CRC */
+	HAL_CRC_MspDeInit(&hcrc);
+	/* Move vector table */
+	SCB->VTOR = BL_Address;
+	/* Set the MSP */
+	__set_MSP(*(uint32_t*)BL_ReceiveBuffer);
+	/* Jump to user application */
+	(*((void (*)(void))(BL_Address + 4)))();
+
+	return SUCCESS;
+
+}
+static ErrorStatus BL_WriteMemory(void)
+{
+	/* Used for storing read or write addresses */
+	uint32_t BL_Address;
+	/* Used for storing number of read or written bytes */
+	uint8_t BL_NumBytes;
+	/* Iterator */
+	uint32_t i;
+
+	/* Is RDP active ? */
+	if((*(__IO uint8_t*)(OPTCR_BYTE1_ADDRESS) == (uint8_t)OB_RDP_LEVEL_0))
+	{
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Receive the start address (4 bytes) with checksum */
+	if(HAL_OK == HAL_UART_Receive(&huart1, BL_ReceiveBuffer, 5, HAL_MAX_DELAY))
+	{
+
+	}
+	else
+	{
+		return ERROR;
+	}
+
+
+	/* Address valid and checksum ok ? */
+	if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, 5))
+	{
+		BL_Address = *(uint32_t*)BL_ReceiveBuffer;
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Receive the number of bytes to be written */
+	if(HAL_OK == HAL_UART_Receive(&huart1, BL_ReceiveBuffer, 1, HAL_MAX_DELAY))
+	{
+
+		BL_NumBytes = BL_ReceiveBuffer[0];
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Receive the data and the checksum */
+	if(HAL_OK == HAL_UART_Receive(&huart1, BL_ReceiveBuffer, BL_NumBytes + 1, HAL_MAX_DELAY))
+	{
+
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* checksum ok ? */
+	if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, BL_NumBytes + 1))
+	{
+
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Option byte address */
+	if(0)
+	{
+		/* Unlock option bytes */
+		if(HAL_OK == HAL_FLASH_OB_Unlock())
+		{
+			/* Write the received data to Option byte area from start address */
+			*(uint8_t*)BL_Address = BL_ReceiveBuffer[0];
+
+			/* Lock option bytes */
+			 HAL_FLASH_OB_Lock();
+
+			/* Send ACK byte */
+			BL_TransmitBuffer[0] = BL_ACK;
+			HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+
+			/* Generate system reset */
+			__NVIC_SystemReset();
+		}
+	}
+	/* Flash Address */
+	else if((BL_Address >= _flash_start) && (BL_Address <= _flash_end))
+	{
+		/* Unlock the flash memory */
+		if(HAL_OK == HAL_FLASH_Unlock())
+		{
+			for(i = 0; i < BL_NumBytes; i++)
+			{
+				if(HAL_OK == HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, BL_Address++, BL_ReceiveBuffer[i]))
+				{
+
+				}
+				else
+				{
+					return ERROR;
+				}
+			}
+
+			HAL_FLASH_Lock();
+		}
+		else
+		{
+			return ERROR;
+		}
+	}
+	/* RAM Address */
+	else if((BL_Address >= _ram_start) && (BL_Address <= _ram_end))
+	{
+		for(i = 0; i < BL_NumBytes; i++)
+		{
+			*(uint8_t*)BL_Address = BL_ReceiveBuffer[i];
+			BL_Address++;
+		}
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	return SUCCESS;
+
+}
 /* USER CODE END 0 */
 
 /**
@@ -129,16 +462,10 @@ static ErrorStatus BL_VerifyChecksum(uint8_t* pData, uint32_t Length)
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-	/* Bootloader Receive Buffer */
-	static uint8_t BL_ReceiveBuffer[BL_Receive_Buffer_Size];
-	/* Bootloader Transmit Buffer */
-	static uint8_t BL_TransmitBuffer[BL_Transmit_Buffer_Size];
 	/* Bootloader current Systick */
 	uint32_t BL_CurrentTick = 0;
-	/* Used for storing read or write addresses */
-	uint8_t* BL_Address;
-	/* Used for storing number of read or written bytes */
-	uint8_t BL_NumBytes;
+	/* Commands error status */
+	ErrorStatus BL_CommandErrorStatus;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -192,107 +519,37 @@ int main(void)
 				{
 					switch(BL_ReceiveBuffer[0])
 					{
-						case BL_Get:
-							/* Send ACK byte */
-							BL_TransmitBuffer[0] = BL_ACK;
-							/* Send the number of bytes (version + commands) */
-							BL_TransmitBuffer[1] = BL_Num_Commands;
-							/* Send the bootloader version */
-							BL_TransmitBuffer[2] = BL_Version;
-							HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 3, HAL_MAX_DELAY);
-							/* Send the supported commands */
-							HAL_UART_Transmit(&huart1, (uint8_t*)BL_Commands, BL_Num_Commands, HAL_MAX_DELAY);
-							/* Send ACK byte */
-							BL_TransmitBuffer[0] = BL_ACK;
-							HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+						case BL_Get_Command:
+							BL_CommandErrorStatus = BL_Get();
 							break;
-						case BL_Get_Version_And_Protection:
-							/* Send ACK byte */
-							BL_TransmitBuffer[0] = BL_ACK;
-							/* Send the bootloader version */
-							BL_TransmitBuffer[1] = BL_Version;
-							/* Send option bytes */
-							BL_TransmitBuffer[2] = 0x00;
-							BL_TransmitBuffer[3] = 0x00;
-							/* Send ACK byte */
-							BL_TransmitBuffer[4] = BL_ACK;
-							HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 5, HAL_MAX_DELAY);
+						case BL_Get_Version_And_Protection_Command:
+							BL_CommandErrorStatus =  BL_GetVersionAndProtectionStatus();
 							break;
-						case BL_Get_ID:
-							/* Send ACK byte */
-							BL_TransmitBuffer[0] = BL_ACK;
-							/* Send the number of bytes */
-							BL_TransmitBuffer[1] = 1;
-							/* Send the process ID */
-							BL_TransmitBuffer[2] = 0x04;
-							BL_TransmitBuffer[3] = 0x00;
-							/* Send ACK byte */
-							BL_TransmitBuffer[4] = BL_ACK;
-							HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 5, HAL_MAX_DELAY);
+						case BL_Get_ID_Command:
+							BL_CommandErrorStatus = BL_GetID();
 							break;
-						case BL_Read_Memory:
-							/* Is RDP active ? */
-							if((*(__IO uint8_t*)(OPTCR_BYTE1_ADDRESS) == (uint8_t)OB_RDP_LEVEL_0))
-							{
-								/* Send ACK byte */
-								BL_TransmitBuffer[0] = BL_ACK;
-								HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
-								/* Receive the start address (4 bytes) with checksum */
-								if(HAL_OK == HAL_UART_Receive(&huart1, BL_ReceiveBuffer, 5, HAL_MAX_DELAY))
-								{
-									/* Address valid and checksum ok ? */
-									if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, 5))
-									{
-										BL_Address = (uint8_t*)(*(uint32_t*)BL_ReceiveBuffer);
-										/* Send ACK byte */
-										BL_TransmitBuffer[0] = BL_ACK;
-										HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
-										/* Receive the number of bytes to be read and a checksum */
-										if(HAL_OK == HAL_UART_Receive(&huart1, BL_ReceiveBuffer, 2, HAL_MAX_DELAY))
-										{
-											/* Checksum ok ? */
-											if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, 2))
-											{
-												BL_NumBytes = BL_ReceiveBuffer[0];
-												/* Send ACK byte */
-												BL_TransmitBuffer[0] = BL_ACK;
-												HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
-												/* Send data to host */
-												HAL_UART_Transmit(&huart1, BL_Address, BL_NumBytes, HAL_MAX_DELAY);
-											}
-											else
-											{
-												/* Send NACK byte */
-												BL_TransmitBuffer[0] = BL_NACK;
-												HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
-											}
-										}
-										else
-										{
-											break;
-										}
-									}
-									else
-									{
-										/* Send NACK byte */
-										BL_TransmitBuffer[0] = BL_NACK;
-										HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
-									}
-								}
-								else
-								{
-									break;
-								}
-							}
-							else
-							{
-								/* Send NACK byte */
-								BL_TransmitBuffer[0] = BL_NACK;
-								HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
-							}
+						case BL_Read_Memory_Command:
+							BL_CommandErrorStatus = BL_ReadMemory();
+							break;
+						case BL_Go_Command:
+							BL_CommandErrorStatus = BL_Go();
+							break;
+						case BL_Write_Memory_Command:
+							BL_CommandErrorStatus = BL_WriteMemory();
 							break;
 						default:
 							break;
+					}
+
+					if(ERROR == BL_CommandErrorStatus)
+					{
+						/* Send NACK byte */
+						BL_TransmitBuffer[0] = BL_NACK;
+						HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+					}
+					else
+					{
+
 					}
 				}
 				else
