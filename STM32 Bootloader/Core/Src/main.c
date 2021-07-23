@@ -48,8 +48,8 @@
 #define	BL_Read_Memory_Command	0x11
 #define	BL_Go_Command	0x21
 #define	BL_Write_Memory_Command	0x31
-#define	BL_Erase_Command	0x43
-#define	BL_Write_Protect_Command	0x62
+#define	BL_Erase_Memory_Command	0x43
+#define	BL_Write_Protect_Command	0x63
 #define	BL_Write_Unprotect_Command	0x73
 #define	BL_Readout_Protect_Command	0x82
 #define	BL_Readout_Unprotect_Command	0x92
@@ -69,7 +69,7 @@ static uint8_t BL_ReceiveBuffer[BL_Receive_Buffer_Size];
 /* Bootloader Transmit Buffer */
 static uint8_t BL_TransmitBuffer[BL_Transmit_Buffer_Size];
 static const uint8_t BL_Commands[] =
-	{0x00, 0x01, 0x02, 0x11, 0x21, 0x31, 0x43, 0x62, 0x73, 0x82, 0x92};
+	{0x00, 0x01, 0x02, 0x11, 0x21, 0x31, 0x43, 0x63, 0x73, 0x82, 0x92};
 extern uint32_t _flash_start, _flash_end, _ram_start, _ram_end, _Min_Stack_Size;
 /* USER CODE END PV */
 
@@ -84,6 +84,11 @@ static ErrorStatus BL_GetID(void);
 static ErrorStatus BL_ReadMemory(void);
 static ErrorStatus BL_Go(void);
 static ErrorStatus BL_WriteMemory(void);
+static ErrorStatus BL_EraseMemory(void);
+static ErrorStatus BL_WriteProtect(void);
+static ErrorStatus BL_WriteUnprotect(void);
+static ErrorStatus BL_ReadoutProtect(void);
+static ErrorStatus BL_ReadoutUnprotect(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -406,9 +411,6 @@ static ErrorStatus BL_WriteMemory(void)
 			/* Send ACK byte */
 			BL_TransmitBuffer[0] = BL_ACK;
 			HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
-
-			/* Generate system reset */
-			__NVIC_SystemReset();
 		}
 	}
 	/* Flash Address */
@@ -452,6 +454,273 @@ static ErrorStatus BL_WriteMemory(void)
 
 	return SUCCESS;
 
+}
+static ErrorStatus BL_EraseMemory(void)
+{
+	/* Used for storing the number of pages to be erased */
+	uint8_t BL_NumPages;
+
+	/* Used for erasing memory */
+	FLASH_EraseInitTypeDef FLASH_EraseInit;
+	FLASH_EraseInit.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+
+	/* Used to find which sector caused the error */
+	uint32_t SectorError;
+
+	/* Iterator */
+	uint32_t i;
+
+	/* Is RDP active ? */
+	if((*(__IO uint8_t*)(OPTCR_BYTE1_ADDRESS) == (uint8_t)OB_RDP_LEVEL_0))
+	{
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Receive the number of pages to be erased */
+	if(HAL_OK == HAL_UART_Receive(&huart1, &BL_NumPages, 1, HAL_MAX_DELAY))
+	{
+
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Start global erase (Mass Erase) */
+	if(BL_NumPages == 0xFF)
+	{
+		FLASH_EraseInit.Banks = FLASH_BANK_BOTH;
+		FLASH_EraseInit.TypeErase = FLASH_TYPEERASE_MASSERASE;
+
+		if(HAL_OK == HAL_FLASHEx_Erase(&FLASH_EraseInit, &SectorError))
+		{
+
+		}
+		else
+		{
+			return ERROR;
+		}
+	}
+	else
+	{
+		/* Receive the page codes */
+		if(HAL_OK == HAL_UART_Receive(&huart1, BL_ReceiveBuffer, BL_NumPages + 1, HAL_MAX_DELAY))
+		{
+
+		}
+		else
+		{
+			return ERROR;
+		}
+
+		/* Checksum OK ? */
+		if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, BL_NumPages + 1))
+		{
+
+		}
+		else
+		{
+			return ERROR;
+		}
+
+		/* Erase the corresponding pages */
+		FLASH_EraseInit.TypeErase = FLASH_TYPEERASE_SECTORS;
+		FLASH_EraseInit.NbSectors = 1;
+
+		for(i = 0; i < BL_NumPages; i++)
+		{
+			FLASH_EraseInit.Sector = (uint32_t)BL_ReceiveBuffer[i];
+			if(HAL_OK == HAL_FLASHEx_Erase(&FLASH_EraseInit, &SectorError))
+			{
+
+			}
+			else
+			{
+				return ERROR;
+			}
+		}
+	}
+
+	return SUCCESS;
+}
+static ErrorStatus BL_WriteProtect(void)
+{
+	/* Iterator */
+	uint32_t i;
+
+	/* Used for storing the number of sectors to be protected */
+	uint8_t BL_NumSectors;
+
+	/* Used for enabling write protection */
+	FLASH_OBProgramInitTypeDef OBInit;
+	OBInit.OptionType = OPTIONBYTE_WRP;
+	OBInit.WRPState = OB_WRPSTATE_ENABLE;
+	OBInit.Banks = FLASH_BANK_BOTH;
+
+	/* Is RDP active ? */
+	if((*(__IO uint8_t*)(OPTCR_BYTE1_ADDRESS) == (uint8_t)OB_RDP_LEVEL_0))
+	{
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Receive the number of sectors to be protected */
+	if(HAL_OK == HAL_UART_Receive(&huart1, &BL_NumSectors, 1, HAL_MAX_DELAY))
+	{
+
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Receive the sector codes */
+	if(HAL_OK == HAL_UART_Receive(&huart1, BL_ReceiveBuffer, BL_NumSectors + 1, HAL_MAX_DELAY))
+	{
+
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Checksum OK ? */
+	if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, BL_NumSectors + 1))
+	{
+
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Enable write protection for selected sectors */
+	for(i = 0; i < BL_NumSectors; i++)
+	{
+		OBInit.WRPSector = BL_ReceiveBuffer[i];
+		if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+		{
+
+		}
+		else
+		{
+			return ERROR;
+		}
+	}
+
+	/* Send ACK byte */
+	BL_TransmitBuffer[0] = BL_ACK;
+	HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+
+
+	return SUCCESS;
+
+}
+static ErrorStatus BL_WriteUnprotect(void)
+{
+	/* Used for disabling write protection */
+	FLASH_OBProgramInitTypeDef OBInit;
+	OBInit.OptionType = OPTIONBYTE_WRP;
+	OBInit.WRPState = OB_WRPSTATE_DISABLE;
+	OBInit.Banks = FLASH_BANK_BOTH;
+	OBInit.WRPSector = OB_WRP_SECTOR_All;
+
+	/* Is RDP active ? */
+	if((*(__IO uint8_t*)(OPTCR_BYTE1_ADDRESS) == (uint8_t)OB_RDP_LEVEL_0))
+	{
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Remove the protection for the whole Flash memory */
+	if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+	{
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	return SUCCESS;
+}
+static ErrorStatus BL_ReadoutProtect(void)
+{
+	/* Used for enabling readout protection */
+	FLASH_OBProgramInitTypeDef OBInit;
+	OBInit.OptionType = OPTIONBYTE_RDP;
+	OBInit.RDPLevel = OB_RDP_LEVEL_1;
+
+	/* Is RDP active ? */
+	if((*(__IO uint8_t*)(OPTCR_BYTE1_ADDRESS) == (uint8_t)OB_RDP_LEVEL_0))
+	{
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Activate Read protection for Flash memory */
+	if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+	{
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	return SUCCESS;
+}
+static ErrorStatus BL_ReadoutUnprotect(void)
+{
+	/* Used for enabling readout protection */
+	FLASH_OBProgramInitTypeDef OBInit;
+	OBInit.OptionType = OPTIONBYTE_RDP;
+	OBInit.RDPLevel = OB_RDP_LEVEL_0;
+
+	/* Send ACK byte */
+	BL_TransmitBuffer[0] = BL_ACK;
+	HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+
+	/* Disable RDP */
+	if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+	{
+		/* Send ACK byte */
+		BL_TransmitBuffer[0] = BL_ACK;
+		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+	}
+	else
+	{
+		return ERROR;
+	}
+
+	/* Clear all RAM */
+
+	return SUCCESS;
 }
 /* USER CODE END 0 */
 
@@ -536,6 +805,21 @@ int main(void)
 							break;
 						case BL_Write_Memory_Command:
 							BL_CommandErrorStatus = BL_WriteMemory();
+							break;
+						case BL_Erase_Memory_Command:
+							BL_CommandErrorStatus = BL_EraseMemory();
+							break;
+						case BL_Write_Protect_Command:
+							BL_CommandErrorStatus = BL_WriteProtect();
+							break;
+						case BL_Write_Unprotect_Command:
+							BL_CommandErrorStatus = BL_WriteUnprotect();
+							break;
+						case BL_Readout_Protect_Command:
+							BL_CommandErrorStatus = BL_ReadoutProtect();
+							break;
+						case BL_Readout_Unprotect_Command:
+							BL_CommandErrorStatus = BL_ReadoutUnprotect();
 							break;
 						default:
 							break;
