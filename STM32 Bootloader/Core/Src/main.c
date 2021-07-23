@@ -37,7 +37,8 @@
 /* USER CODE BEGIN PD */
 #define BL_ACK 0x79
 #define BL_NACK 0x1F
-#define BL_Version 0x1A
+#define BL_Version 0x70
+#define BL_PID 	0x419
 #define BL_Num_Commands 11UL
 #define BL_Receive_Buffer_Size	255UL
 #define BL_Transmit_Buffer_Size	255UL
@@ -78,6 +79,7 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static ErrorStatus BL_VerifyCommand(uint8_t Command, uint8_t CommandComplement);
 static ErrorStatus BL_VerifyChecksum(uint8_t* pData, uint32_t Length);
+static void BL_ReverseBytes(void *pStart, uint32_t Length);
 static ErrorStatus BL_Get(void);
 static ErrorStatus BL_GetVersionAndProtectionStatus(void);
 static ErrorStatus BL_GetID(void);
@@ -122,18 +124,50 @@ static ErrorStatus BL_VerifyCommand(uint8_t Command, uint8_t CommandComplement)
 static ErrorStatus BL_VerifyChecksum(uint8_t* pData, uint32_t Length)
 {
 	uint8_t result = 0x00;
-	for(int i = 0; i < Length; i++)
-	{
-		result ^= pData[i];
-	}
-	if(result == 0x00)
-	{
-		return SUCCESS;
-	}
-	else
+
+	if(Length < 2)
 	{
 		return ERROR;
 	}
+	else if(Length == 2)
+	{
+		if((pData[0] ^ pData[1]) == 0xFF)
+		{
+			return SUCCESS;
+		}
+		else
+		{
+			return ERROR;
+		}
+	}
+	else
+	{
+		for(int i = 0; i < Length; i++)
+		{
+			result ^= pData[i];
+		}
+		if(result == 0x00)
+		{
+			return SUCCESS;
+		}
+		else
+		{
+			return ERROR;
+		}
+	}
+
+}
+static void BL_ReverseBytes(void *pStart, uint32_t Length)
+{
+    uint8_t *Low = pStart;
+    uint8_t *High = pStart + Length - 1;
+    uint8_t Swap;
+    while (Low < High)
+    {
+    	Swap = *Low;
+        *Low++ = *High;
+        *High-- = Swap;
+    }
 }
 static ErrorStatus BL_Get(void)
 {
@@ -174,8 +208,8 @@ static ErrorStatus BL_GetID(void)
 	/* Send the number of bytes */
 	BL_TransmitBuffer[1] = 1;
 	/* Send the process ID */
-	BL_TransmitBuffer[2] = 0x04;
-	BL_TransmitBuffer[3] = 0x00;
+	BL_TransmitBuffer[2] = (uint8_t)((BL_PID >> 8) & 0xFF);
+	BL_TransmitBuffer[3] = (uint8_t)(BL_PID & 0xFF);
 	/* Send ACK byte */
 	BL_TransmitBuffer[4] = BL_ACK;
 	HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 5, HAL_MAX_DELAY);
@@ -214,6 +248,8 @@ static ErrorStatus BL_ReadMemory(void)
 	/* Address valid and checksum ok ? */
 	if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, 5))
 	{
+		/* Reverse bytes because MSB is received first */
+		BL_ReverseBytes(BL_ReceiveBuffer, 4);
 		BL_Address = *(uint32_t*)BL_ReceiveBuffer;
 		/* Send ACK byte */
 		BL_TransmitBuffer[0] = BL_ACK;
@@ -248,7 +284,14 @@ static ErrorStatus BL_ReadMemory(void)
 	}
 
 	/* Send data to host */
-	HAL_UART_Transmit(&huart1, (uint8_t*)BL_Address, BL_NumBytes, HAL_MAX_DELAY);
+	if(HAL_OK == HAL_UART_Transmit(&huart1, (uint8_t*)BL_Address, BL_NumBytes, HAL_MAX_DELAY))
+	{
+
+	}
+	else
+	{
+		return ERROR;
+	}
 
 
 	return SUCCESS;
@@ -282,6 +325,8 @@ static ErrorStatus BL_Go(void)
 	/* Address valid and checksum ok ? */
 	if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, 5))
 	{
+		/* Reverse bytes because MSB is received first */
+		BL_ReverseBytes(BL_ReceiveBuffer, 4);
 		BL_Address = *(uint32_t*)BL_ReceiveBuffer;
 	}
 	else
@@ -290,16 +335,9 @@ static ErrorStatus BL_Go(void)
 	}
 
 	/* First byte lies in stack */
-	if(*(uint32_t*)BL_Address <= _ram_end && *(uint32_t*)BL_Address > (_ram_end - _Min_Stack_Size))
-	{
-		/* Send ACK byte */
-		BL_TransmitBuffer[0] = BL_ACK;
-		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
-	}
-	else
-	{
-		return ERROR;
-	}
+	/* Send ACK byte */
+	BL_TransmitBuffer[0] = BL_ACK;
+	HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
 
 	/* Deinitialize all used peripherals */
 	/* Deinitialize GPIO */
@@ -311,11 +349,15 @@ static ErrorStatus BL_Go(void)
 	/* Deinitialize CRC */
 	HAL_CRC_MspDeInit(&hcrc);
 	/* Move vector table */
+	__DMB();
 	SCB->VTOR = BL_Address;
+	__DSB();
 	/* Set the MSP */
-	__set_MSP(*(uint32_t*)BL_ReceiveBuffer);
+	__set_MSP(BL_Address);
 	/* Jump to user application */
-	(*((void (*)(void))(BL_Address + 4)))();
+	void (*JumpAddress)(void) = (void*)(*((uint32_t*)(BL_Address + 4)));
+	JumpAddress();
+	/*(*((void (*)(void))(BL_Address + 4)))();*/
 
 	return SUCCESS;
 
@@ -355,6 +397,8 @@ static ErrorStatus BL_WriteMemory(void)
 	/* Address valid and checksum ok ? */
 	if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, 5))
 	{
+		/* Reverse bytes because MSB is received first */
+		BL_ReverseBytes(BL_ReceiveBuffer, 4);
 		BL_Address = *(uint32_t*)BL_ReceiveBuffer;
 		/* Send ACK byte */
 		BL_TransmitBuffer[0] = BL_ACK;
@@ -414,7 +458,7 @@ static ErrorStatus BL_WriteMemory(void)
 		}
 	}
 	/* Flash Address */
-	else if((BL_Address >= _flash_start) && (BL_Address <= _flash_end))
+	else if(((uint32_t*)BL_Address >= &_flash_start) && ((uint32_t*)BL_Address <= &_flash_end))
 	{
 		/* Unlock the flash memory */
 		if(HAL_OK == HAL_FLASH_Unlock())
@@ -439,7 +483,7 @@ static ErrorStatus BL_WriteMemory(void)
 		}
 	}
 	/* RAM Address */
-	else if((BL_Address >= _ram_start) && (BL_Address <= _ram_end))
+	else if(((uint32_t*)BL_Address >= &_ram_start) && ((uint32_t*)BL_Address < &_ram_end))
 	{
 		for(i = 0; i < BL_NumBytes; i++)
 		{
@@ -451,6 +495,10 @@ static ErrorStatus BL_WriteMemory(void)
 	{
 		return ERROR;
 	}
+
+	/* Send ACK byte */
+	BL_TransmitBuffer[0] = BL_ACK;
+	HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
 
 	return SUCCESS;
 
@@ -495,12 +543,21 @@ static ErrorStatus BL_EraseMemory(void)
 	/* Start global erase (Mass Erase) */
 	if(BL_NumPages == 0xFF)
 	{
-		FLASH_EraseInit.Banks = FLASH_BANK_BOTH;
-		FLASH_EraseInit.TypeErase = FLASH_TYPEERASE_MASSERASE;
-
-		if(HAL_OK == HAL_FLASHEx_Erase(&FLASH_EraseInit, &SectorError))
+		/* Unlock the flash memory */
+		if(HAL_OK == HAL_FLASH_Unlock())
 		{
+			FLASH_EraseInit.Banks = FLASH_BANK_BOTH;
+			FLASH_EraseInit.TypeErase = FLASH_TYPEERASE_MASSERASE;
 
+			if(HAL_OK == HAL_FLASHEx_Erase(&FLASH_EraseInit, &SectorError))
+			{
+
+			}
+			else
+			{
+				return ERROR;
+			}
+			HAL_FLASH_Lock();
 		}
 		else
 		{
@@ -533,19 +590,32 @@ static ErrorStatus BL_EraseMemory(void)
 		FLASH_EraseInit.TypeErase = FLASH_TYPEERASE_SECTORS;
 		FLASH_EraseInit.NbSectors = 1;
 
-		for(i = 0; i < BL_NumPages; i++)
+		/* Unlock the flash memory */
+		if(HAL_OK == HAL_FLASH_Unlock())
 		{
-			FLASH_EraseInit.Sector = (uint32_t)BL_ReceiveBuffer[i];
-			if(HAL_OK == HAL_FLASHEx_Erase(&FLASH_EraseInit, &SectorError))
+			for(i = 0; i < BL_NumPages; i++)
 			{
+				FLASH_EraseInit.Sector = (uint32_t)BL_ReceiveBuffer[i];
+				if(HAL_OK == HAL_FLASHEx_Erase(&FLASH_EraseInit, &SectorError))
+				{
 
+				}
+				else
+				{
+					return ERROR;
+				}
 			}
-			else
-			{
-				return ERROR;
-			}
+			HAL_FLASH_Lock();
+		}
+		else
+		{
+			return ERROR;
 		}
 	}
+
+	/* Send ACK byte */
+	BL_TransmitBuffer[0] = BL_ACK;
+	HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
 
 	return SUCCESS;
 }
@@ -605,18 +675,27 @@ static ErrorStatus BL_WriteProtect(void)
 		return ERROR;
 	}
 
-	/* Enable write protection for selected sectors */
-	for(i = 0; i < BL_NumSectors; i++)
+	/* Unlock the option bytes */
+	if(HAL_OK == HAL_FLASH_OB_Unlock())
 	{
-		OBInit.WRPSector = BL_ReceiveBuffer[i];
-		if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+		/* Enable write protection for selected sectors */
+		for(i = 0; i < BL_NumSectors; i++)
 		{
+			OBInit.WRPSector = BL_ReceiveBuffer[i];
+			if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+			{
 
+			}
+			else
+			{
+				return ERROR;
+			}
 		}
-		else
-		{
-			return ERROR;
-		}
+		HAL_FLASH_OB_Lock();
+	}
+	else
+	{
+		return ERROR;
 	}
 
 	/* Send ACK byte */
@@ -648,12 +727,22 @@ static ErrorStatus BL_WriteUnprotect(void)
 		return ERROR;
 	}
 
-	/* Remove the protection for the whole Flash memory */
-	if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+
+	/* Unlock the option bytes */
+	if(HAL_OK == HAL_FLASH_OB_Unlock())
 	{
-		/* Send ACK byte */
-		BL_TransmitBuffer[0] = BL_ACK;
-		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+		/* Remove the protection for the whole Flash memory */
+		if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+		{
+			/* Send ACK byte */
+			BL_TransmitBuffer[0] = BL_ACK;
+			HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+		}
+		else
+		{
+			return ERROR;
+		}
+		HAL_FLASH_OB_Lock();
 	}
 	else
 	{
@@ -681,12 +770,21 @@ static ErrorStatus BL_ReadoutProtect(void)
 		return ERROR;
 	}
 
-	/* Activate Read protection for Flash memory */
-	if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+	/* Unlock the option bytes */
+	if(HAL_OK == HAL_FLASH_OB_Unlock())
 	{
-		/* Send ACK byte */
-		BL_TransmitBuffer[0] = BL_ACK;
-		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+		/* Activate Read protection for Flash memory */
+		if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+		{
+			/* Send ACK byte */
+			BL_TransmitBuffer[0] = BL_ACK;
+			HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+		}
+		else
+		{
+			return ERROR;
+		}
+		HAL_FLASH_OB_Lock();
 	}
 	else
 	{
@@ -706,12 +804,21 @@ static ErrorStatus BL_ReadoutUnprotect(void)
 	BL_TransmitBuffer[0] = BL_ACK;
 	HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
 
-	/* Disable RDP */
-	if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+	/* Unlock the option bytes */
+	if(HAL_OK == HAL_FLASH_OB_Unlock())
 	{
-		/* Send ACK byte */
-		BL_TransmitBuffer[0] = BL_ACK;
-		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+		/* Disable RDP */
+		if(HAL_OK == HAL_FLASHEx_OBProgram(&OBInit))
+		{
+			/* Send ACK byte */
+			BL_TransmitBuffer[0] = BL_ACK;
+			HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
+		}
+		else
+		{
+			return ERROR;
+		}
+		HAL_FLASH_OB_Lock();
 	}
 	else
 	{
