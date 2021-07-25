@@ -273,7 +273,7 @@ static ErrorStatus BL_ReadMemory(void)
 	/* Checksum ok ? */
 	if(SUCCESS == BL_VerifyChecksum(BL_ReceiveBuffer, 2))
 	{
-		BL_NumBytes = BL_ReceiveBuffer[0];
+		BL_NumBytes = BL_ReceiveBuffer[0] + 1;
 		/* Send ACK byte */
 		BL_TransmitBuffer[0] = BL_ACK;
 		HAL_UART_Transmit(&huart1, BL_TransmitBuffer, 1, HAL_MAX_DELAY);
@@ -357,7 +357,6 @@ static ErrorStatus BL_Go(void)
 	/* Jump to user application */
 	void (*JumpAddress)(void) = (void*)(*((uint32_t*)(BL_Address + 4)));
 	JumpAddress();
-	/*(*((void (*)(void))(BL_Address + 4)))();*/
 
 	return SUCCESS;
 
@@ -413,7 +412,7 @@ static ErrorStatus BL_WriteMemory(void)
 	if(HAL_OK == HAL_UART_Receive(&huart1, BL_ReceiveBuffer, 1, HAL_MAX_DELAY))
 	{
 
-		BL_NumBytes = BL_ReceiveBuffer[0];
+		BL_NumBytes = BL_ReceiveBuffer[0] + 1;
 	}
 	else
 	{
@@ -441,7 +440,7 @@ static ErrorStatus BL_WriteMemory(void)
 	}
 
 	/* Option byte address */
-	if(0)
+	if((BL_Address >= 0x1FFFC000 && BL_Address <= 0x1FFFC00F) || (BL_Address >= 0x1FFEC000 && BL_Address <= 0x1FFEC00F))
 	{
 		/* Unlock option bytes */
 		if(HAL_OK == HAL_FLASH_OB_Unlock())
