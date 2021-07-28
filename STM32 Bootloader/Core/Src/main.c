@@ -221,7 +221,7 @@ static ErrorStatus BL_ReadMemory(void)
 	/* Used for storing read or write addresses */
 	uint32_t BL_Address;
 	/* Used for storing number of read or written bytes */
-	uint8_t BL_NumBytes;
+	uint32_t BL_NumBytes;
 
 	/* Is RDP active ? */
 	if((*(__IO uint8_t*)(OPTCR_BYTE1_ADDRESS) == (uint8_t)OB_RDP_LEVEL_0))
@@ -353,7 +353,7 @@ static ErrorStatus BL_Go(void)
 	SCB->VTOR = BL_Address;
 	__DSB();
 	/* Set the MSP */
-	__set_MSP(BL_Address);
+	__set_MSP(*(uint32_t *)BL_Address);
 	/* Jump to user application */
 	void (*JumpAddress)(void) = (void*)(*((uint32_t*)(BL_Address + 4)));
 	JumpAddress();
@@ -366,7 +366,7 @@ static ErrorStatus BL_WriteMemory(void)
 	/* Used for storing read or write addresses */
 	uint32_t BL_Address;
 	/* Used for storing number of read or written bytes */
-	uint8_t BL_NumBytes;
+	uint32_t BL_NumBytes;
 	/* Iterator */
 	uint32_t i;
 

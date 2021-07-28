@@ -42,18 +42,17 @@ bootLoaderCommands = {
 	"ReadoutUnprotect" : b'\x92\x6D' 
 }
 
-def GetSectors(startAddress, size):
-	sectors = []
+def GetSectors(startAddress, size, sectors):
 	endAddress = startAddress + size
-	started = True
+	started = False
 	for sectorNumber, sectorAddress  in flashSectors.items():
 		if started:
 			sectors.append(sectorNumber)
-		if(sectorAddress[0] <= startAddress <= sectorAddress[1]):
+		if((sectorNumber not in sectors) and (sectorAddress[0] <= startAddress) and (startAddress <= sectorAddress[1])):
 			sectors.append(sectorNumber)
 			started = True
 		if(sectorAddress[0] <= endAddress <= sectorAddress[1]):
-			return sectors
+			return
 
 def GetCommand():
 	# Send 0x00 + 0xFF
@@ -118,11 +117,11 @@ def GetID():
 		exit(0)
 
 def ReadMemory(startAddress, numBytes):
-	if(numBytes > 255):
+	if(numBytes > 256):
 		print("Number of bytes must be less than or equal 256")
 		exit(0)
 
-	print("Attempting to read {} bytes from address {}".format(numBytes + 1, hex(startAddress)))
+	print("Attempting to read {} bytes from address {}".format(numBytes, hex(startAddress)))
 	# Send 0x11 + 0xEE
 	ser.write(bootLoaderCommands["ReadMemory"])
 	# Wait for ACK or NACK
@@ -139,6 +138,7 @@ def ReadMemory(startAddress, numBytes):
 		print("Failed")
 		exit(0)
 	# Send the number of bytes to be read (1 byte) and a checksum (1 byte)
+	numBytes -= 1
 	numBytesPlusChecksum = bytearray([numBytes, numBytes ^ 0xFF])
 	ser.write(numBytesPlusChecksum)
 	# Wait for ACK or NACK
@@ -149,11 +149,11 @@ def ReadMemory(startAddress, numBytes):
 	data = ser.read(numBytes + 1)
 	data = data.hex()
 	data = ["0x" + data[i:i+2] for i in range(0, len(data), 2)]
-	print("Data: {}".format(data))
+	return data
 
 	
 def Go(startAddress):
-	print("Attempting to go to address {}".format(startAddress))
+	print("Attempting to go to address {}".format(hex(startAddress)))
 	# Send 0x21 + 0xDE
 	ser.write(bootLoaderCommands["Go"])
 	# Wait for ACK or NACK
@@ -196,7 +196,6 @@ def WriteMemory(startAddress, data):
 	# Send the number of bytes to written (1 byte)
 	ser.write(bytearray([numBytes - 1]))
 	# Send the data (N + 1 bytes) and checksum
-	data = list(data)
 	data.append(reduce(ixor, data))
 	data = bytearray(data)
 	ser.write(data)
@@ -304,7 +303,7 @@ if(len(serialPorts) == 0):
 # Connect to the serial port
 ser = serial.Serial(serialPorts[0], 115200, timeout = 1, parity=serial.PARITY_EVEN)
 # Find elf file
-os.chdir("Debug")
+os.chdir("/home/ziadyasser/Documents/TrueStudio_Workspace/Test/Release")
 elfFiles = glob.glob("*.elf")
 if(len(elfFiles) == 0):
 	print("No elf files found")
@@ -322,23 +321,37 @@ with open(elfFiles[0], 'rb') as f:
 			addr = hex(s.header['sh_addr']),
 			offs = hex(s.header['sh_offset']),
 			size = hex(s.header['sh_size'])))
-# Flash the desired sections
-for sectionName in [".isr_vector", ".text", ".rodata", ".data", ".bss"]:
-	print("Flashing {}".format(sectionName))
-	currentSection = elffile.get_section_by_name(sectionName)
-	startAddress = currentSection.header['sh_addr']
-	size = currentSection.header['sh_size']
-	sectors = GetSectors(startAddress, size)
-	EraseMemory(sectors)
-	index = 0
-	while(size >= 0xFF):
-		WriteMemory(startAddress, data[index: index + 0xFF])
-		index += 0xFF
-		startAddress += 0xFF
-		size -= 0xFF
-	if(size > 0):
-		WriteMemory(startAddress, data[index:])	
+	# Flash the desired sections
+	eraseSectors = []
+	# Erase the sectors to be flashed
+	for sectionName in [".isr_vector", ".text", ".rodata", ".init_array", ".fini_array"]:
+		currentSection = elfFile.get_section_by_name(sectionName)
+		startAddress = currentSection.header['sh_addr']
+		size = currentSection.header['sh_size']
+		GetSectors(startAddress, size, eraseSectors)
+	EraseMemory(eraseSectors)
+	for sectionName in [".isr_vector", ".text", ".rodata", ".init_array", ".fini_array"]:
+		print("Flashing {}".format(sectionName))
+		currentSection = elfFile.get_section_by_name(sectionName)
+		startAddress = currentSection.header['sh_addr']
+		size = currentSection.header['sh_size']
+		data = list(currentSection.data())
+		index = 0
+		while(size > 0):
+			chunck = data[index: min(len(data), index + 256)]
+			chunckSize = len(chunck)
+			WriteMemory(startAddress, chunck)
+			dataRead = ReadMemory(startAddress, chunckSize)
+			dataRead = [int(x[2:], 16) for x in dataRead]
+			if(chunck[:-1] != dataRead):
+				print("Data mismatch")
+				exit(0)
+			index += chunckSize
+			startAddress += chunckSize
+			size -= chunckSize
 
-
+	Go(elfFile.get_section_by_name(".isr_vector").header['sh_addr'])
+	print(ser.readline())
+	ser.close()
 
 
